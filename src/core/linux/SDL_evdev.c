@@ -712,9 +712,11 @@ SDL_EVDEV_translate_keycode(int keycode)
     if (keycode < SDL_arraysize(EVDEV_Keycodes)) {
         scancode = EVDEV_Keycodes[keycode];
     }
+    /*
     if (scancode == SDL_SCANCODE_UNKNOWN) {
         SDL_Log("The key you just pressed is not recognized by SDL. To help get this fixed, please report this to the SDL mailing list <sdl@libsdl.org> EVDEV KeyCode %d \n", keycode);
     }
+    */
     return scancode;
 }
 
