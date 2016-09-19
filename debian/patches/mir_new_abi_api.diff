@@ -1,0 +1,1226 @@
+--- a/configure.in
++++ b/configure.in
+@@ -1260,12 +1260,12 @@
+                 MIR_LIBS=`$PKG_CONFIG --libs mirclient egl xkbcommon`
+                 save_CFLAGS="$CFLAGS"
+                 CFLAGS="$save_CFLAGS $MIR_CFLAGS"
+-                
+-                dnl This will disable Mir on Ubuntu < 14.04
++
++                dnl This will disable Mir on Ubuntu < 15.04 (Mir should be 0.14 at this point)
+                 AC_TRY_COMPILE([
+                 #include <mir_toolkit/mir_client_library.h>
+                 ],[
+-                    MirMotionToolType tool = mir_motion_tool_type_mouse;
++                    MirPointerButton button = mir_pointer_button_primary;
+                 ],[
+                 video_mir=yes
+                 ])
+--- a/src/video/mir/SDL_mirdyn.c
++++ b/src/video/mir/SDL_mirdyn.c
+@@ -84,9 +84,11 @@
+ /* Define all the function pointers and wrappers... */
+ #define SDL_MIR_MODULE(modname) int SDL_MIR_HAVE_##modname = 0;
+ #define SDL_MIR_SYM(rc,fn,params) SDL_DYNMIRFN_##fn MIR_##fn = NULL;
++#define SDL_MIR_SYM_CONST(type,name) SDL_DYMMIRCONST_##name MIR_##name = NULL;
+ #include "SDL_mirsym.h"
+ #undef SDL_MIR_MODULE
+ #undef SDL_MIR_SYM
++#undef SDL_MIR_SYM_CONST
+ 
+ static int mir_load_refcount = 0;
+ 
+@@ -103,9 +105,11 @@
+             /* set all the function pointers to NULL. */
+ #define SDL_MIR_MODULE(modname) SDL_MIR_HAVE_##modname = 0;
+ #define SDL_MIR_SYM(rc,fn,params) MIR_##fn = NULL;
++#define SDL_MIR_SYM_CONST(type,name) MIR_##name = NULL;
+ #include "SDL_mirsym.h"
+ #undef SDL_MIR_MODULE
+ #undef SDL_MIR_SYM
++#undef SDL_MIR_SYM_CONST
+ 
+ 
+ #ifdef SDL_VIDEO_DRIVER_MIR_DYNAMIC
+@@ -139,15 +143,19 @@
+ 
+ #define SDL_MIR_MODULE(modname) SDL_MIR_HAVE_##modname = 1; /* default yes */
+ #define SDL_MIR_SYM(rc,fn,params)
++#define SDL_MIR_SYM_CONST(type,name)
+ #include "SDL_mirsym.h"
+ #undef SDL_MIR_MODULE
+ #undef SDL_MIR_SYM
++#undef SDL_MIR_SYM_CONST
+ 
+ #define SDL_MIR_MODULE(modname) thismod = &SDL_MIR_HAVE_##modname;
+ #define SDL_MIR_SYM(rc,fn,params) MIR_##fn = (SDL_DYNMIRFN_##fn) MIR_GetSym(#fn,thismod);
++#define SDL_MIR_SYM_CONST(type,name) MIR_##name = *(SDL_DYMMIRCONST_##name*) MIR_GetSym(#name,thismod);
+ #include "SDL_mirsym.h"
+ #undef SDL_MIR_MODULE
+ #undef SDL_MIR_SYM
++#undef SDL_MIR_SYM_CONST
+ 
+         if ((SDL_MIR_HAVE_MIR_CLIENT) && (SDL_MIR_HAVE_XKBCOMMON)) {
+             /* all required symbols loaded. */
+@@ -162,9 +170,11 @@
+ 
+ #define SDL_MIR_MODULE(modname) SDL_MIR_HAVE_##modname = 1; /* default yes */
+ #define SDL_MIR_SYM(rc,fn,params) MIR_##fn = fn;
++#define SDL_MIR_SYM_CONST(type,name) MIR_##name = name;
+ #include "SDL_mirsym.h"
+ #undef SDL_MIR_MODULE
+ #undef SDL_MIR_SYM
++#undef SDL_MIR_SYM_CONST
+ 
+ #endif
+     }
+--- a/src/video/mir/SDL_mirdyn.h
++++ b/src/video/mir/SDL_mirdyn.h
+@@ -40,9 +40,13 @@
+ #define SDL_MIR_SYM(rc,fn,params) \
+     typedef rc (*SDL_DYNMIRFN_##fn) params; \
+     extern SDL_DYNMIRFN_##fn MIR_##fn;
++#define SDL_MIR_SYM_CONST(type, name) \
++    typedef type SDL_DYMMIRCONST_##name; \
++    extern SDL_DYMMIRCONST_##name MIR_##name;
+ #include "SDL_mirsym.h"
+ #undef SDL_MIR_MODULE
+ #undef SDL_MIR_SYM
++#undef SDL_MIR_SYM_CONST
+ 
+ #ifdef __cplusplus
+ }
+--- a/src/video/mir/SDL_mirevents.c
++++ b/src/video/mir/SDL_mirevents.c
+@@ -58,7 +58,7 @@
+ {
+     SDL_Window* keyboard_window = SDL_GetKeyboardFocus();
+ 
+-    if (keyboard_window != sdl_window)
++    if (sdl_window && keyboard_window != sdl_window)
+         SDL_SetKeyboardFocus(sdl_window);
+ }
+ 
+@@ -68,51 +68,68 @@
+    a single key press produces a character.
+ */
+ static void
+-HandleKeyEvent(MirKeyEvent const ev, SDL_Window* window)
++HandleKeyEvent(MirKeyboardEvent const* key_event, SDL_Window* window)
+ {
+-    uint32_t scancode = SDL_SCANCODE_UNKNOWN;
+-    Uint8 key_state = ev.action == mir_key_action_up ? SDL_RELEASED : SDL_PRESSED;
++    xkb_keysym_t key_code;
++    Uint8 key_state;
++    int event_scancode;
++    uint32_t sdl_scancode = SDL_SCANCODE_UNKNOWN;
++
++    MirKeyboardAction action = MIR_mir_keyboard_event_action(key_event);
++
++    key_state      = SDL_PRESSED;
++    key_code       = MIR_mir_keyboard_event_key_code(key_event);
++    event_scancode = MIR_mir_keyboard_event_scan_code(key_event);
++
++    if (action == mir_keyboard_action_up)
++        key_state = SDL_RELEASED;
+ 
+     CheckKeyboardFocus(window);
+ 
+-    if (ev.scan_code < SDL_arraysize(xfree86_scancode_table2))
+-        scancode = xfree86_scancode_table2[ev.scan_code];
++    if (event_scancode < SDL_arraysize(xfree86_scancode_table2))
++        sdl_scancode = xfree86_scancode_table2[event_scancode];
+ 
+-    if (scancode != SDL_SCANCODE_UNKNOWN)
+-        SDL_SendKeyboardKey(key_state, scancode);
++    if (sdl_scancode != SDL_SCANCODE_UNKNOWN)
++        SDL_SendKeyboardKey(key_state, sdl_scancode);
+ 
+     if (key_state == SDL_PRESSED)
+-        HandleKeyText(ev.key_code);
++        HandleKeyText(key_code);
+ }
+ 
+ static void
+-HandleMouseButton(SDL_Window* sdl_window, Uint8 state, MirMotionButton button_state)
++HandleMouseButton(SDL_Window* sdl_window, Uint8 state, MirPointerEvent const* pointer)
+ {
+-    static uint32_t last_sdl_button;
+-    uint32_t sdl_button;
++    uint32_t sdl_button           = SDL_BUTTON_LEFT;
++    MirPointerButton button_state = mir_pointer_button_primary;
++
++    static uint32_t old_button_states = 0;
++    uint32_t new_button_states = MIR_mir_pointer_event_buttons(pointer);
++
++    // XOR on our old button states vs our new states to get the newley pressed/released button
++    button_state = new_button_states ^ old_button_states;
+ 
+     switch (button_state) {
+-        case mir_motion_button_primary:
++        case mir_pointer_button_primary:
+             sdl_button = SDL_BUTTON_LEFT;
+             break;
+-        case mir_motion_button_secondary:
++        case mir_pointer_button_secondary:
+             sdl_button = SDL_BUTTON_RIGHT;
+             break;
+-        case mir_motion_button_tertiary:
++        case mir_pointer_button_tertiary:
+             sdl_button = SDL_BUTTON_MIDDLE;
+             break;
+-        case mir_motion_button_forward:
++        case mir_pointer_button_forward:
+             sdl_button = SDL_BUTTON_X1;
+             break;
+-        case mir_motion_button_back:
++        case mir_pointer_button_back:
+             sdl_button = SDL_BUTTON_X2;
+             break;
+         default:
+-            sdl_button = last_sdl_button;
+             break;
+     }
+ 
+-    last_sdl_button = sdl_button;
++    old_button_states = new_button_states;
++
+     SDL_SendMouseButton(sdl_window, 0, state, sdl_button);
+ }
+ 
+@@ -148,104 +165,127 @@
+ }
+ 
+ static void
+-HandleTouchEvent(MirMotionEvent const motion, int cord_index, SDL_Window* sdl_window)
++HandleTouchEvent(MirTouchEvent const* touch, int device_id, SDL_Window* sdl_window)
+ {
+-    int device_id = motion.device_id;
+-    int id = motion.pointer_coordinates[cord_index].id;
++    int i, point_count;
++    point_count = MIR_mir_touch_event_point_count(touch);
+ 
+-    int width  = sdl_window->w;
+-    int height = sdl_window->h;
+-    float x   = motion.pointer_coordinates[cord_index].x;
+-    float y   = motion.pointer_coordinates[cord_index].y;
+-
+-    float n_x = x / width;
+-    float n_y = y / height;
+-    float pressure = motion.pointer_coordinates[cord_index].pressure;
+-
+-    AddTouchDevice(motion.device_id);
+-
+-    switch (motion.action) {
+-        case mir_motion_action_down:
+-        case mir_motion_action_pointer_down:
+-            HandleTouchPress(device_id, id, SDL_TRUE, n_x, n_y, pressure);
+-            break;
+-        case mir_motion_action_up:
+-        case mir_motion_action_pointer_up:
+-            HandleTouchPress(device_id, id, SDL_FALSE, n_x, n_y, pressure);
+-            break;
+-        case mir_motion_action_hover_move:
+-        case mir_motion_action_move:
+-            HandleTouchMotion(device_id, id, n_x, n_y, pressure);
+-            break;
+-        default:
+-            break;
++    AddTouchDevice(device_id);
++
++    for (i = 0; i < point_count; i++) {
++        int id = MIR_mir_touch_event_id(touch, i);
++
++        int width  = sdl_window->w;
++        int height = sdl_window->h;
++
++        float x = MIR_mir_touch_event_axis_value(touch, i, mir_touch_axis_x);
++        float y = MIR_mir_touch_event_axis_value(touch, i, mir_touch_axis_y);
++
++        float n_x = x / width;
++        float n_y = y / height;
++
++        float pressure = MIR_mir_touch_event_axis_value(touch, i, mir_touch_axis_pressure);
++
++        switch (MIR_mir_touch_event_action(touch, i)) {
++            case mir_touch_action_up:
++                HandleTouchPress(device_id, id, SDL_FALSE, n_x, n_y, pressure);
++                break;
++            case mir_touch_action_down:
++                HandleTouchPress(device_id, id, SDL_TRUE, n_x, n_y, pressure);
++                break;
++            case mir_touch_action_change:
++                HandleTouchMotion(device_id, id, n_x, n_y, pressure);
++                break;
++        }
+     }
+ }
+ 
+ static void
+-HandleMouseEvent(MirMotionEvent const motion, int cord_index, SDL_Window* sdl_window)
++HandleMouseEvent(MirPointerEvent const* pointer, SDL_Window* sdl_window)
+ {
+     SDL_SetMouseFocus(sdl_window);
+ 
+-    switch (motion.action) {
+-        case mir_motion_action_down:
+-        case mir_motion_action_pointer_down:
+-            HandleMouseButton(sdl_window, SDL_PRESSED, motion.button_state);
+-            break;
+-        case mir_motion_action_up:
+-        case mir_motion_action_pointer_up:
+-            HandleMouseButton(sdl_window, SDL_RELEASED, motion.button_state);
+-            break;
+-        case mir_motion_action_hover_move:
+-        case mir_motion_action_move:
+-            HandleMouseMotion(sdl_window,
+-                              motion.pointer_coordinates[cord_index].x,
+-                              motion.pointer_coordinates[cord_index].y);
++    switch (MIR_mir_pointer_event_action(pointer)) {
++        case mir_pointer_action_button_down:
++            HandleMouseButton(sdl_window, SDL_PRESSED, pointer);
++            break;
++        case mir_pointer_action_button_up:
++            HandleMouseButton(sdl_window, SDL_RELEASED, pointer);
++            break;
++        case mir_pointer_action_motion: {
++            int x, y;
++            int hscroll, vscroll;
++            SDL_Mouse* mouse = SDL_GetMouse();
++            x = MIR_mir_pointer_event_axis_value(pointer, mir_pointer_axis_x);
++            y = MIR_mir_pointer_event_axis_value(pointer, mir_pointer_axis_y);
++            hscroll = MIR_mir_pointer_event_axis_value(pointer, mir_pointer_axis_hscroll);
++            vscroll = MIR_mir_pointer_event_axis_value(pointer, mir_pointer_axis_vscroll);
++
++            if (mouse && (mouse->x != x || mouse->y != y))
++                HandleMouseMotion(sdl_window, x, y);
++            if (vscroll != 0 || hscroll != 0)
++                HandleMouseScroll(sdl_window, hscroll, vscroll);
++        }
+             break;
+-        case mir_motion_action_outside:
++        case mir_pointer_action_leave:
+             SDL_SetMouseFocus(NULL);
+             break;
+-        case mir_motion_action_scroll:
+-            HandleMouseScroll(sdl_window,
+-                              motion.pointer_coordinates[cord_index].hscroll,
+-                              motion.pointer_coordinates[cord_index].vscroll);
+-            break;
+-        case mir_motion_action_cancel:
+-        case mir_motion_action_hover_enter:
+-        case mir_motion_action_hover_exit:
+-            break;
++        case mir_pointer_action_enter:
+         default:
+             break;
+     }
+ }
+ 
+ static void
+-HandleMotionEvent(MirMotionEvent const motion, SDL_Window* sdl_window)
++MIR_HandleInput(MirInputEvent const* input_event, SDL_Window* window)
+ {
+-    int cord_index;
+-    for (cord_index = 0; cord_index < motion.pointer_count; cord_index++) {
+-        if (motion.pointer_coordinates[cord_index].tool_type == mir_motion_tool_type_finger) {
+-            HandleTouchEvent(motion, cord_index, sdl_window);
+-        }
+-        else {
+-            HandleMouseEvent(motion, cord_index, sdl_window);
+-        }
++    switch (MIR_mir_input_event_get_type(input_event)) {
++        case (mir_input_event_type_key):
++            HandleKeyEvent(MIR_mir_input_event_get_keyboard_event(input_event), window);
++            break;
++        case (mir_input_event_type_pointer):
++            HandleMouseEvent(MIR_mir_input_event_get_pointer_event(input_event), window);
++            break;
++        case (mir_input_event_type_touch):
++            HandleTouchEvent(MIR_mir_input_event_get_touch_event(input_event),
++                             MIR_mir_input_event_get_device_id(input_event),
++                             window);
++            break;
++        default:
++            break;
+     }
+ }
+ 
++static void
++MIR_HandleResize(MirResizeEvent const* resize_event, SDL_Window* window)
++{
++    int new_w = MIR_mir_resize_event_get_width (resize_event);
++    int new_h = MIR_mir_resize_event_get_height(resize_event);
++
++    int old_w = window->w;
++    int old_h = window->h;
++
++    if (new_w != old_w || new_h != old_h)
++        SDL_SendWindowEvent(window, SDL_WINDOWEVENT_RESIZED, new_w, new_h);
++}
++
+ void
+-MIR_HandleInput(MirSurface* surface, MirEvent const* ev, void* context)
++MIR_HandleEvent(MirSurface* surface, MirEvent const* ev, void* context)
+ {
+-    SDL_Window* window = (SDL_Window*)context;
+-    switch (ev->type) {
+-        case (mir_event_type_key):
+-            HandleKeyEvent(ev->key, window);
+-            break;
+-        case (mir_event_type_motion):
+-            HandleMotionEvent(ev->motion, window);
+-            break;
+-        default:
+-            break;
++    MirEventType event_type = MIR_mir_event_get_type(ev);
++    SDL_Window* window      = (SDL_Window*)context;
++
++    if (window) {
++        switch (event_type) {
++            case (mir_event_type_input):
++                MIR_HandleInput(MIR_mir_event_get_input_event(ev), window);
++                break;
++            case (mir_event_type_resize):
++                MIR_HandleResize(MIR_mir_event_get_resize_event(ev), window);
++                break;
++            default:
++                break;
++        }
+     }
+ }
+ 
+--- a/src/video/mir/SDL_mirevents.h
++++ b/src/video/mir/SDL_mirevents.h
+@@ -29,7 +29,7 @@
+ #include <mir_toolkit/mir_client_library.h>
+ 
+ extern void
+-MIR_HandleInput(MirSurface* surface, MirEvent const* ev, void* context);
++MIR_HandleEvent(MirSurface* surface, MirEvent const* ev, void* context);
+ 
+ #endif /* _SDL_mirevents_h */
+ 
+--- a/src/video/mir/SDL_mirframebuffer.c
++++ b/src/video/mir/SDL_mirframebuffer.c
+@@ -39,7 +39,11 @@
+     SDL_PIXELFORMAT_BGR888,   /* mir_pixel_format_xbgr_8888 */
+     SDL_PIXELFORMAT_ARGB8888, /* mir_pixel_format_argb_8888 */
+     SDL_PIXELFORMAT_RGB888,   /* mir_pixel_format_xrgb_8888 */
+-    SDL_PIXELFORMAT_BGR24     /* mir_pixel_format_bgr_888   */
++    SDL_PIXELFORMAT_BGR24,    /* mir_pixel_format_bgr_888   */
++    SDL_PIXELFORMAT_RGB24,    /* mir_pixel_format_rgb_888   */
++    SDL_PIXELFORMAT_RGB565,   /* mir_pixel_format_rgb_565   */
++    SDL_PIXELFORMAT_RGBA5551, /* mir_pixel_format_rgba_5551 */
++    SDL_PIXELFORMAT_RGBA4444  /* mir_pixel_format_rgba_4444 */
+ };
+ 
+ Uint32
+@@ -53,19 +57,13 @@
+                             void** pixels, int* pitch)
+ {
+     MIR_Data* mir_data = _this->driverdata;
+-    MIR_Window* mir_window;
+-    MirSurfaceParameters surfaceparm;
+ 
+     mir_data->software = SDL_TRUE;
+ 
+     if (MIR_CreateWindow(_this, window) < 0)
+         return SDL_SetError("Failed to created a mir window.");
+ 
+-    mir_window = window->driverdata;
+-
+-    MIR_mir_surface_get_parameters(mir_window->surface, &surfaceparm);
+-
+-    *format = MIR_GetSDLPixelFormat(surfaceparm.pixel_format);
++    *format = MIR_GetSDLPixelFormat(mir_data->pixel_format);
+     if (*format == SDL_PIXELFORMAT_UNKNOWN)
+         return SDL_SetError("Unknown pixel format");
+ 
+@@ -75,12 +73,6 @@
+     if (*pixels == NULL)
+         return SDL_OutOfMemory();
+ 
+-    mir_window->surface = MIR_mir_connection_create_surface_sync(mir_data->connection, &surfaceparm);
+-    if (!MIR_mir_surface_is_valid(mir_window->surface)) {
+-        const char* error = MIR_mir_surface_get_error_message(mir_window->surface);
+-        return SDL_SetError("Failed to created a mir surface: %s", error);
+-    }
+-
+     return 0;
+ }
+ 
+@@ -91,12 +83,14 @@
+     MIR_Window* mir_window = window->driverdata;
+ 
+     MirGraphicsRegion region;
++    MirBufferStream* bs;
+     int i, j, x, y, w, h, start;
+     int bytes_per_pixel, bytes_per_row, s_stride, d_stride;
+     char* s_dest;
+     char* pixels;
+ 
+-    MIR_mir_surface_get_graphics_region(mir_window->surface, &region);
++    bs = MIR_mir_surface_get_buffer_stream(mir_window->surface);
++    MIR_mir_buffer_stream_get_graphics_region(bs, &region);
+ 
+     s_dest = region.vaddr;
+     pixels = (char*)window->surface->pixels;
+@@ -144,7 +138,7 @@
+         }
+     }
+ 
+-    MIR_mir_surface_swap_buffers_sync(mir_window->surface);
++    MIR_mir_buffer_stream_swap_buffers_sync(bs);
+ 
+     return 0;
+ }
+--- a/src/video/mir/SDL_mirmouse.c
++++ b/src/video/mir/SDL_mirmouse.c
+@@ -27,13 +27,22 @@
+ 
+ #if SDL_VIDEO_DRIVER_MIR
+ 
+-#include "SDL_mirmouse.h"
+-
+ #include "../../events/SDL_mouse_c.h"
++#include "../SDL_sysvideo.h"
+ #include "SDL_assert.h"
+ 
+ #include "SDL_mirdyn.h"
+ 
++#include "SDL_mirvideo.h"
++#include "SDL_mirmouse.h"
++#include "SDL_mirwindow.h"
++
++typedef struct
++{
++    MirCursorConfiguration* conf;
++    MirBufferStream*        stream;
++} MIR_Cursor;
++
+ static SDL_Cursor*
+ MIR_CreateDefaultCursor()
+ {
+@@ -41,6 +50,16 @@
+ 
+     cursor = SDL_calloc(1, sizeof(SDL_Cursor));
+     if (cursor) {
++
++        MIR_Cursor* mir_cursor = SDL_calloc(1, sizeof(MIR_Cursor));
++        if (mir_cursor) {
++            mir_cursor->conf   = NULL;
++            mir_cursor->stream = NULL;
++            cursor->driverdata = mir_cursor;
++        }
++        else {
++            SDL_OutOfMemory();
++        }
+     }
+     else {
+         SDL_OutOfMemory();
+@@ -49,58 +68,160 @@
+     return cursor;
+ }
+ 
++static void
++CopySurfacePixelsToMirStream(SDL_Surface* surface, MirBufferStream* stream)
++{
++    char* dest, *pixels;
++    int i, s_w, s_h, r_stride, p_stride, bytes_per_pixel, bytes_per_row;
++
++    MirGraphicsRegion region;
++    MIR_mir_buffer_stream_get_graphics_region(stream, &region);
++
++    s_w = surface->w;
++    s_h = surface->h;
++
++    bytes_per_pixel = surface->format->BytesPerPixel;
++    bytes_per_row   = bytes_per_pixel * s_w;
++
++    dest = region.vaddr;
++    pixels = (char*)surface->pixels;
++
++    r_stride = region.stride;
++    p_stride = surface->pitch;
++
++    for (i = 0; i < s_h; i++)
++    {
++        memcpy(dest, pixels, bytes_per_row);
++        dest   += r_stride;
++        pixels += p_stride;
++    }
++}
++
+ static SDL_Cursor*
+-MIR_CreateCursor(SDL_Surface* sruface, int hot_x, int hot_y)
++MIR_CreateCursor(SDL_Surface* surface, int hot_x, int hot_y)
+ {
+-    return MIR_CreateDefaultCursor();
++    MirCursorConfiguration* conf;
++    MirBufferStream*        stream;
++
++    int s_w = surface->w;
++    int s_h = surface->h;
++
++    MIR_Data* mir_data     = (MIR_Data*)SDL_GetVideoDevice()->driverdata;
++    SDL_Cursor* cursor     = MIR_CreateDefaultCursor();
++    MIR_Cursor* mir_cursor = (MIR_Cursor*)cursor->driverdata;
++
++    stream = MIR_mir_connection_create_buffer_stream_sync(mir_data->connection,
++                                                          s_w, s_h, mir_data->pixel_format,
++                                                          mir_buffer_usage_software);
++
++    conf = MIR_mir_cursor_configuration_from_buffer_stream(stream, hot_x, hot_y);
++
++    CopySurfacePixelsToMirStream(surface, stream);
++    MIR_mir_buffer_stream_swap_buffers_sync(stream);
++
++    mir_cursor->conf   = conf;
++    mir_cursor->stream = stream;
++
++    return cursor;
+ }
+ 
+ static SDL_Cursor*
+ MIR_CreateSystemCursor(SDL_SystemCursor id)
+ {
++    char const* cursor_name = NULL;
++    MirCursorConfiguration* conf;
++    SDL_Cursor* cursor = MIR_CreateDefaultCursor();
++
+     switch(id) {
+         case SDL_SYSTEM_CURSOR_ARROW:
++            cursor_name = MIR_mir_arrow_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_IBEAM:
++            cursor_name = MIR_mir_caret_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_WAIT:
++            cursor_name = MIR_mir_busy_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_CROSSHAIR:
++            /* Unsupported */
++            cursor_name = MIR_mir_arrow_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_WAITARROW:
++            cursor_name = MIR_mir_busy_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_SIZENWSE:
++            cursor_name = MIR_mir_omnidirectional_resize_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_SIZENESW:
++            cursor_name = MIR_mir_omnidirectional_resize_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_SIZEWE:
++            cursor_name = MIR_mir_horizontal_resize_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_SIZENS:
++            cursor_name = MIR_mir_vertical_resize_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_SIZEALL:
++            cursor_name = MIR_mir_omnidirectional_resize_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_NO:
++            /* Unsupported */
++            cursor_name = MIR_mir_closed_hand_cursor_name;
+             break;
+         case SDL_SYSTEM_CURSOR_HAND:
++            cursor_name = MIR_mir_open_hand_cursor_name;
+             break;
+         default:
+             SDL_assert(0);
+             return NULL;
+     }
+ 
+-    return MIR_CreateDefaultCursor();
++    conf = MIR_mir_cursor_configuration_from_name(cursor_name);
++
++    cursor->driverdata = conf;
++
++    return cursor;
+ }
+ 
+ static void
+ MIR_FreeCursor(SDL_Cursor* cursor)
+ {
+-    if (cursor)
+-      SDL_free(cursor);
++    if (cursor) {
++
++        if (cursor->driverdata) {
++            MIR_Cursor* mir_cursor = (MIR_Cursor*)cursor->driverdata;
++
++            if (mir_cursor->conf)
++                MIR_mir_cursor_configuration_destroy(mir_cursor->conf);
++            if (mir_cursor->stream)
++                MIR_mir_buffer_stream_release_sync(mir_cursor->stream);
++
++            SDL_free(mir_cursor);
++        }
++
++        SDL_free(cursor);
++    }
+ }
+ 
+ static int
+ MIR_ShowCursor(SDL_Cursor* cursor)
+ {
++    MIR_Data* mir_data      = (MIR_Data*)SDL_GetVideoDevice()->driverdata;
++    MIR_Window* mir_window  = mir_data->current_window;
++
++    if (cursor && cursor->driverdata) {
++        if (mir_window && MIR_mir_surface_is_valid(mir_window->surface)) {
++            MIR_Cursor* mir_cursor = (MIR_Cursor*)cursor->driverdata;
++
++            if (mir_cursor->conf) {
++                MIR_mir_wait_for(MIR_mir_surface_configure_cursor(mir_window->surface, mir_cursor->conf));
++            }
++        }
++    }
++    else if(mir_window && MIR_mir_surface_is_valid(mir_window->surface)) {
++        MIR_mir_wait_for(MIR_mir_surface_configure_cursor(mir_window->surface, NULL));
++    }
++    
+     return 0;
+ }
+ 
+--- a/src/video/mir/SDL_mirsym.h
++++ b/src/video/mir/SDL_mirsym.h
+@@ -23,23 +23,74 @@
+ 
+ SDL_MIR_MODULE(MIR_CLIENT)
+ SDL_MIR_SYM(MirDisplayConfiguration*,mir_connection_create_display_config,(MirConnection *connection))
+-SDL_MIR_SYM(MirSurface *,mir_connection_create_surface_sync,(MirConnection *connection, MirSurfaceParameters const *params))
++SDL_MIR_SYM(MirSurface *,mir_surface_create_sync,(MirSurfaceSpec* spec))
++SDL_MIR_SYM(MirEGLNativeWindowType,mir_buffer_stream_get_egl_native_window,(MirBufferStream *surface))
++SDL_MIR_SYM(void,mir_buffer_stream_get_graphics_region,(MirBufferStream *stream, MirGraphicsRegion *graphics_region))
++SDL_MIR_SYM(void,mir_buffer_stream_swap_buffers_sync,(MirBufferStream *stream))
++SDL_MIR_SYM(void,mir_surface_set_event_handler,(MirSurface *surface, mir_surface_event_callback callback, void* context))
++SDL_MIR_SYM(MirSurfaceSpec*,mir_connection_create_spec_for_normal_surface,(MirConnection *connection, int width, int height, MirPixelFormat format))
++SDL_MIR_SYM(MirSurfaceSpec*,mir_connection_create_spec_for_changes,(MirConnection *connection))
++SDL_MIR_SYM(void,mir_surface_spec_set_buffer_usage,(MirSurfaceSpec *spec, MirBufferUsage usage))
++SDL_MIR_SYM(void,mir_surface_spec_set_name,(MirSurfaceSpec *spec, char const *name))
++SDL_MIR_SYM(void,mir_surface_spec_release,(MirSurfaceSpec *spec))
++SDL_MIR_SYM(void,mir_surface_spec_set_width,(MirSurfaceSpec *spec, unsigned width))
++SDL_MIR_SYM(void,mir_surface_spec_set_height,(MirSurfaceSpec *spec, unsigned height))
++SDL_MIR_SYM(void,mir_surface_spec_set_min_width,(MirSurfaceSpec *spec, unsigned min_width))
++SDL_MIR_SYM(void,mir_surface_spec_set_min_height,(MirSurfaceSpec *spec, unsigned min_height))
++SDL_MIR_SYM(void,mir_surface_spec_set_max_width,(MirSurfaceSpec *spec, unsigned max_width))
++SDL_MIR_SYM(void,mir_surface_spec_set_max_height,(MirSurfaceSpec *spec, unsigned max_height))
++SDL_MIR_SYM(void,mir_surface_spec_set_type,(MirSurfaceSpec *spec, MirSurfaceType type))
++SDL_MIR_SYM(void,mir_surface_spec_set_state,(MirSurfaceSpec *spec, MirSurfaceState state))
++SDL_MIR_SYM(void,mir_surface_apply_spec,(MirSurface *surface, MirSurfaceSpec *spec))
++SDL_MIR_SYM(void,mir_surface_get_parameters,(MirSurface *surface, MirSurfaceParameters *params))
++SDL_MIR_SYM(MirBufferStream*,mir_surface_get_buffer_stream,(MirSurface *surface))
++SDL_MIR_SYM(MirCursorConfiguration*,mir_cursor_configuration_from_buffer_stream,(MirBufferStream* stream, int hot_x, int hot_y))
++SDL_MIR_SYM(MirBufferStream*,mir_connection_create_buffer_stream_sync,(MirConnection *connection, int w, int h, MirPixelFormat format, MirBufferUsage usage))
++SDL_MIR_SYM(MirKeyboardAction,mir_keyboard_event_action,(MirKeyboardEvent const *event))
++SDL_MIR_SYM(xkb_keysym_t,mir_keyboard_event_key_code,(MirKeyboardEvent const *event))
++SDL_MIR_SYM(int,mir_keyboard_event_scan_code,(MirKeyboardEvent const *event))
++SDL_MIR_SYM(bool,mir_pointer_event_button_state,(MirPointerEvent const *event, MirPointerButton button))
++SDL_MIR_SYM(MirPointerButtons,mir_pointer_event_buttons,(MirPointerEvent const *event))
++SDL_MIR_SYM(MirInputDeviceId,mir_input_event_get_device_id,(MirInputEvent const* ev))
++SDL_MIR_SYM(MirTouchId,mir_touch_event_id,(MirTouchEvent const *event, size_t touch_index))
++SDL_MIR_SYM(float,mir_touch_event_axis_value,(MirTouchEvent const *event, size_t touch_index, MirTouchAxis axis))
++SDL_MIR_SYM(MirTouchAction,mir_touch_event_action,(MirTouchEvent const *event, size_t touch_index))
++SDL_MIR_SYM(MirPointerAction,mir_pointer_event_action,(MirPointerEvent const *event))
++SDL_MIR_SYM(float,mir_pointer_event_axis_value,(MirPointerEvent const *event, MirPointerAxis))
++SDL_MIR_SYM(MirEventType,mir_event_get_type,(MirEvent const *event))
++SDL_MIR_SYM(MirInputEventType,mir_input_event_get_type,(MirInputEvent const *event))
++SDL_MIR_SYM(MirInputEvent const*,mir_event_get_input_event,(MirEvent const *event))
++SDL_MIR_SYM(MirResizeEvent const*,mir_event_get_resize_event,(MirEvent const *event))
++SDL_MIR_SYM(MirKeyboardEvent const*,mir_input_event_get_keyboard_event,(MirInputEvent const *event))
++SDL_MIR_SYM(MirPointerEvent const*,mir_input_event_get_pointer_event,(MirInputEvent const *event))
++SDL_MIR_SYM(MirTouchEvent const*,mir_input_event_get_touch_event,(MirInputEvent const *event))
++SDL_MIR_SYM(unsigned int,mir_touch_event_point_count,(MirTouchEvent const *event))
+ SDL_MIR_SYM(void,mir_connection_get_available_surface_formats,(MirConnection* connection, MirPixelFormat* formats, unsigned const int format_size, unsigned int *num_valid_formats))
+ SDL_MIR_SYM(MirEGLNativeDisplayType,mir_connection_get_egl_native_display,(MirConnection *connection))
+-SDL_MIR_SYM(MirBool,mir_connection_is_valid,(MirConnection *connection))
++SDL_MIR_SYM(bool,mir_connection_is_valid,(MirConnection *connection))
+ SDL_MIR_SYM(void,mir_connection_release,(MirConnection *connection))
++SDL_MIR_SYM(MirPixelFormat,mir_connection_get_egl_pixel_format,(MirConnection* connection, void* egldisplay, void* eglconfig))
+ SDL_MIR_SYM(MirConnection *,mir_connect_sync,(char const *server, char const *app_name))
+ SDL_MIR_SYM(void,mir_display_config_destroy,(MirDisplayConfiguration* display_configuration))
+-SDL_MIR_SYM(MirEGLNativeWindowType,mir_surface_get_egl_native_window,(MirSurface *surface))
+ SDL_MIR_SYM(char const *,mir_surface_get_error_message,(MirSurface *surface))
+-SDL_MIR_SYM(void,mir_surface_get_graphics_region,(MirSurface *surface, MirGraphicsRegion *graphics_region))
+-SDL_MIR_SYM(void,mir_surface_get_parameters,(MirSurface *surface, MirSurfaceParameters *parameters))
+-SDL_MIR_SYM(MirBool,mir_surface_is_valid,(MirSurface *surface))
++SDL_MIR_SYM(bool,mir_surface_is_valid,(MirSurface *surface))
+ SDL_MIR_SYM(void,mir_surface_release_sync,(MirSurface *surface))
+-SDL_MIR_SYM(void,mir_surface_set_event_handler,(MirSurface *surface, MirEventDelegate const *event_handler))
+-SDL_MIR_SYM(MirWaitHandle*,mir_surface_set_type,(MirSurface *surface, MirSurfaceType type))
+-SDL_MIR_SYM(MirWaitHandle*,mir_surface_set_state,(MirSurface *surface, MirSurfaceState state))
+-SDL_MIR_SYM(void,mir_surface_swap_buffers_sync,(MirSurface *surface))
++SDL_MIR_SYM(void,mir_buffer_stream_release_sync,(MirBufferStream *stream))
++SDL_MIR_SYM(MirCursorConfiguration*,mir_cursor_configuration_from_name,(char const* cursor_name))
++SDL_MIR_SYM(MirWaitHandle*,mir_surface_configure_cursor,(MirSurface* surface, MirCursorConfiguration const* conf))
++SDL_MIR_SYM(void,mir_cursor_configuration_destroy,(MirCursorConfiguration* conf))
++SDL_MIR_SYM(void,mir_wait_for,(MirWaitHandle* handle))
++SDL_MIR_SYM(int,mir_resize_event_get_width,(MirResizeEvent const* resize_event))
++SDL_MIR_SYM(int,mir_resize_event_get_height,(MirResizeEvent const* resize_event))
++
++SDL_MIR_SYM_CONST(char const*,mir_omnidirectional_resize_cursor_name)
++SDL_MIR_SYM_CONST(char const*,mir_busy_cursor_name)
++SDL_MIR_SYM_CONST(char const*,mir_arrow_cursor_name)
++SDL_MIR_SYM_CONST(char const*,mir_caret_cursor_name)
++SDL_MIR_SYM_CONST(char const*,mir_vertical_resize_cursor_name)
++SDL_MIR_SYM_CONST(char const*,mir_horizontal_resize_cursor_name)
++SDL_MIR_SYM_CONST(char const*,mir_open_hand_cursor_name)
++SDL_MIR_SYM_CONST(char const*,mir_closed_hand_cursor_name)
+ 
+ SDL_MIR_MODULE(XKBCOMMON)
+ SDL_MIR_SYM(int,xkb_keysym_to_utf8,(xkb_keysym_t keysym, char *buffer, size_t size))
+--- a/src/video/mir/SDL_mirvideo.c
++++ b/src/video/mir/SDL_mirvideo.c
+@@ -27,13 +27,13 @@
+ 
+ #if SDL_VIDEO_DRIVER_MIR
+ 
++#include "SDL_mirwindow.h"
+ #include "SDL_video.h"
+ 
+ #include "SDL_mirframebuffer.h"
+ #include "SDL_mirmouse.h"
+ #include "SDL_miropengl.h"
+ #include "SDL_mirvideo.h"
+-#include "SDL_mirwindow.h"
+ 
+ #include "SDL_mirdyn.h"
+ 
+@@ -146,29 +146,29 @@
+     device->GL_GetProcAddress  = MIR_GL_GetProcAddress;
+ 
+     /* mirwindow */
+-    device->CreateWindow        = MIR_CreateWindow;
+-    device->DestroyWindow       = MIR_DestroyWindow;
+-    device->GetWindowWMInfo     = MIR_GetWindowWMInfo;
+-    device->SetWindowFullscreen = MIR_SetWindowFullscreen;
+-    device->MaximizeWindow      = MIR_MaximizeWindow;
+-    device->MinimizeWindow      = MIR_MinimizeWindow;
+-    device->RestoreWindow       = MIR_RestoreWindow;
++    device->CreateWindow         = MIR_CreateWindow;
++    device->DestroyWindow        = MIR_DestroyWindow;
++    device->GetWindowWMInfo      = MIR_GetWindowWMInfo;
++    device->SetWindowFullscreen  = MIR_SetWindowFullscreen;
++    device->MaximizeWindow       = MIR_MaximizeWindow;
++    device->MinimizeWindow       = MIR_MinimizeWindow;
++    device->RestoreWindow        = MIR_RestoreWindow;
++    device->ShowWindow           = MIR_RestoreWindow;
++    device->HideWindow           = MIR_HideWindow;
++    device->SetWindowSize        = MIR_SetWindowSize;
++    device->SetWindowMinimumSize = MIR_SetWindowMinimumSize;
++    device->SetWindowMaximumSize = MIR_SetWindowMaximumSize;
++    device->SetWindowTitle       = MIR_SetWindowTitle;
+ 
+     device->CreateWindowFrom     = NULL;
+-    device->SetWindowTitle       = NULL;
+     device->SetWindowIcon        = NULL;
+-    device->SetWindowPosition    = NULL;
+-    device->SetWindowSize        = NULL;
+-    device->SetWindowMinimumSize = NULL;
+-    device->SetWindowMaximumSize = NULL;
+-    device->ShowWindow           = NULL;
+-    device->HideWindow           = NULL;
+     device->RaiseWindow          = NULL;
+     device->SetWindowBordered    = NULL;
+     device->SetWindowGammaRamp   = NULL;
+     device->GetWindowGammaRamp   = NULL;
+     device->SetWindowGrab        = NULL;
+     device->OnWindowEnter        = NULL;
++    device->SetWindowPosition    = NULL;
+ 
+     /* mirframebuffer */
+     device->CreateWindowFramebuffer  = MIR_CreateWindowFramebuffer;
+@@ -272,8 +272,10 @@
+ {
+     MIR_Data* mir_data = _this->driverdata;
+ 
+-    mir_data->connection = MIR_mir_connect_sync(NULL, __PRETTY_FUNCTION__);
+-    mir_data->software = SDL_FALSE;
++    mir_data->connection     = MIR_mir_connect_sync(NULL, __PRETTY_FUNCTION__);
++    mir_data->current_window = NULL;
++    mir_data->software       = SDL_FALSE;
++    mir_data->pixel_format   = mir_pixel_format_invalid;
+ 
+     if (!MIR_mir_connection_is_valid(mir_data->connection))
+         return SDL_SetError("Failed to connect to the Mir Server");
+--- a/src/video/mir/SDL_mirvideo.h
++++ b/src/video/mir/SDL_mirvideo.h
+@@ -29,11 +29,14 @@
+ #include <EGL/egl.h>
+ #include <mir_toolkit/mir_client_library.h>
+ 
++typedef struct MIR_Window MIR_Window;
++
+ typedef struct
+ {
+     MirConnection* connection;
+-    SDL_bool software;
+-    
++    MIR_Window*    current_window;
++    SDL_bool       software;
++    MirPixelFormat pixel_format;
+ } MIR_Data;
+ 
+ #endif /* _SDL_mirvideo_h_ */
+--- a/src/video/mir/SDL_mirwindow.c
++++ b/src/video/mir/SDL_mirwindow.c
+@@ -46,52 +46,15 @@
+     return 0;
+ }
+ 
+-MirPixelFormat
+-FindValidPixelFormat(MIR_Data* mir_data)
+-{
+-    unsigned int pf_size = 32;
+-    unsigned int valid_formats;
+-    unsigned int f;
+-
+-    MirPixelFormat formats[pf_size];
+-    MIR_mir_connection_get_available_surface_formats(mir_data->connection, formats,
+-                                                 pf_size, &valid_formats);
+-
+-    for (f = 0; f < valid_formats; f++) {
+-        MirPixelFormat cur_pf = formats[f];
+-
+-        if (cur_pf == mir_pixel_format_abgr_8888 ||
+-            cur_pf == mir_pixel_format_xbgr_8888 ||
+-            cur_pf == mir_pixel_format_argb_8888 ||
+-            cur_pf == mir_pixel_format_xrgb_8888) {
+-
+-            return cur_pf;
+-        }
+-    }
+-
+-    return mir_pixel_format_invalid;
+-}
+-
+ int
+ MIR_CreateWindow(_THIS, SDL_Window* window)
+ {
+     MIR_Window* mir_window;
+     MIR_Data* mir_data;
++    MirPixelFormat pixel_format;
++    MirBufferUsage buffer_usage;
+ 
+-    MirSurfaceParameters surfaceparm =
+-    {
+-        .name = "MirSurface",
+-        .width = window->w,
+-        .height = window->h,
+-        .pixel_format = mir_pixel_format_invalid,
+-        .buffer_usage = mir_buffer_usage_hardware,
+-        .output_id = mir_display_output_id_invalid
+-    };
+-
+-    MirEventDelegate delegate = {
+-        MIR_HandleInput,
+-        window
+-    };
++    MirSurfaceSpec* spec;
+ 
+     mir_window = SDL_calloc(1, sizeof(MIR_Window));
+     if (!mir_window)
+@@ -100,9 +63,6 @@
+     mir_data = _this->driverdata;
+     window->driverdata = mir_window;
+ 
+-    if (mir_data->software)
+-        surfaceparm.buffer_usage = mir_buffer_usage_software;
+-
+     if (window->x == SDL_WINDOWPOS_UNDEFINED)
+         window->x = 0;
+ 
+@@ -112,12 +72,32 @@
+     mir_window->mir_data = mir_data;
+     mir_window->sdl_window = window;
+ 
+-    surfaceparm.pixel_format = FindValidPixelFormat(mir_data);
+-    if (surfaceparm.pixel_format == mir_pixel_format_invalid) {
++    pixel_format = MIR_mir_connection_get_egl_pixel_format(mir_data->connection,
++                                                           _this->egl_data->egl_display,
++                                                           _this->egl_data->egl_config);
++
++    mir_data->pixel_format = pixel_format;
++    if (pixel_format == mir_pixel_format_invalid) {
+         return SDL_SetError("Failed to find a valid pixel format.");
+     }
+ 
+-    mir_window->surface = MIR_mir_connection_create_surface_sync(mir_data->connection, &surfaceparm);
++    buffer_usage = mir_buffer_usage_hardware;
++    if (mir_data->software)
++        buffer_usage = mir_buffer_usage_software;
++
++    spec = MIR_mir_connection_create_spec_for_normal_surface(mir_data->connection,
++                                                             window->w,
++                                                             window->h,
++                                                             pixel_format);
++
++    MIR_mir_surface_spec_set_buffer_usage(spec, buffer_usage);
++    MIR_mir_surface_spec_set_name(spec, "Mir surface");
++
++    mir_window->surface = MIR_mir_surface_create_sync(spec);
++    MIR_mir_surface_set_event_handler(mir_window->surface, MIR_HandleEvent, window);
++
++    MIR_mir_surface_spec_release(spec);
++
+     if (!MIR_mir_surface_is_valid(mir_window->surface)) {
+         const char* error = MIR_mir_surface_get_error_message(mir_window->surface);
+         return SDL_SetError("Failed to created a mir surface: %s", error);
+@@ -125,7 +105,8 @@
+ 
+     if (window->flags & SDL_WINDOW_OPENGL) {
+         EGLNativeWindowType egl_native_window =
+-                        (EGLNativeWindowType)MIR_mir_surface_get_egl_native_window(mir_window->surface);
++                        (EGLNativeWindowType)MIR_mir_buffer_stream_get_egl_native_window(
++                                                       MIR_mir_surface_get_buffer_stream(mir_window->surface));
+ 
+         mir_window->egl_surface = SDL_EGL_CreateSurface(_this, egl_native_window);
+ 
+@@ -138,7 +119,7 @@
+         mir_window->egl_surface = EGL_NO_SURFACE;
+     }
+ 
+-    MIR_mir_surface_set_event_handler(mir_window->surface, &delegate);
++    mir_data->current_window = mir_window;
+ 
+     return 0;
+ }
+@@ -146,13 +127,15 @@
+ void
+ MIR_DestroyWindow(_THIS, SDL_Window* window)
+ {
+-    MIR_Data* mir_data = _this->driverdata;
++    MIR_Data* mir_data     = _this->driverdata;
+     MIR_Window* mir_window = window->driverdata;
+ 
+     if (mir_data) {
+         SDL_EGL_DestroySurface(_this, mir_window->egl_surface);
+         MIR_mir_surface_release_sync(mir_window->surface);
+ 
++        mir_data->current_window = NULL;
++
+         SDL_free(mir_window);
+     }
+     window->driverdata = NULL;
+@@ -180,49 +163,166 @@
+                         SDL_VideoDisplay* display,
+                         SDL_bool fullscreen)
+ {
++    MIR_Data*   mir_data   = _this->driverdata;
+     MIR_Window* mir_window = window->driverdata;
++    MirSurfaceSpec* spec;
++    MirSurfaceState state;
+ 
+     if (IsSurfaceValid(mir_window) < 0)
+         return;
+ 
+     if (fullscreen) {
+-        MIR_mir_surface_set_state(mir_window->surface, mir_surface_state_fullscreen);
++        state = mir_surface_state_fullscreen;
+     } else {
+-        MIR_mir_surface_set_state(mir_window->surface, mir_surface_state_restored);
++        state = mir_surface_state_restored;
+     }
++
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_state(spec, state);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
+ }
+ 
+ void
+ MIR_MaximizeWindow(_THIS, SDL_Window* window)
+ {
++    MIR_Data*   mir_data   = _this->driverdata;
+     MIR_Window* mir_window = window->driverdata;
++    MirSurfaceSpec* spec;
+ 
+     if (IsSurfaceValid(mir_window) < 0)
+         return;
+ 
+-    MIR_mir_surface_set_state(mir_window->surface, mir_surface_state_maximized);
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_state(spec, mir_surface_state_maximized);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
+ }
+ 
+ void
+ MIR_MinimizeWindow(_THIS, SDL_Window* window)
+ {
++    MIR_Data*   mir_data   = _this->driverdata;
+     MIR_Window* mir_window = window->driverdata;
++    MirSurfaceSpec* spec;
+ 
+     if (IsSurfaceValid(mir_window) < 0)
+         return;
+ 
+-    MIR_mir_surface_set_state(mir_window->surface, mir_surface_state_minimized);
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_state(spec, mir_surface_state_minimized);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
+ }
+ 
+ void
+ MIR_RestoreWindow(_THIS, SDL_Window * window)
+ {
++    MIR_Data*   mir_data   = _this->driverdata;
++    MIR_Window* mir_window = window->driverdata;
++    MirSurfaceSpec* spec;
++
++    if (IsSurfaceValid(mir_window) < 0)
++        return;
++
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_state(spec, mir_surface_state_restored);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
++}
++
++void
++MIR_HideWindow(_THIS, SDL_Window* window)
++{
++    MIR_Data*   mir_data   = _this->driverdata;
++    MIR_Window* mir_window = window->driverdata;
++    MirSurfaceSpec* spec;
++
++    if (IsSurfaceValid(mir_window) < 0)
++        return;
++
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_state(spec, mir_surface_state_hidden);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
++}
++
++void
++MIR_SetWindowSize(_THIS, SDL_Window* window)
++{
++    MIR_Data*   mir_data   = _this->driverdata;
++    MIR_Window* mir_window = window->driverdata;
++    MirSurfaceSpec* spec;
++
++    if (IsSurfaceValid(mir_window) < 0)
++        return;
++
++    /* You cannot set the x/y of a mir window! So only update w/h */
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_width (spec, window->w);
++    MIR_mir_surface_spec_set_height(spec, window->h);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
++}
++
++void
++MIR_SetWindowMinimumSize(_THIS, SDL_Window* window)
++{
++    MIR_Data*   mir_data   = _this->driverdata;
++    MIR_Window* mir_window = window->driverdata;
++    MirSurfaceSpec* spec;
++
++    if (IsSurfaceValid(mir_window) < 0)
++        return;
++
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_min_width (spec, window->min_w);
++    MIR_mir_surface_spec_set_min_height(spec, window->min_h);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
++}
++
++void
++MIR_SetWindowMaximumSize(_THIS, SDL_Window* window)
++{
++    MIR_Data*   mir_data   = _this->driverdata;
++    MIR_Window* mir_window = window->driverdata;
++    MirSurfaceSpec* spec;
++
++    if (IsSurfaceValid(mir_window) < 0)
++        return;
++
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_max_width (spec, window->max_w);
++    MIR_mir_surface_spec_set_max_height(spec, window->max_h);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
++}
++
++void
++MIR_SetWindowTitle(_THIS, SDL_Window* window)
++{
++    MIR_Data*   mir_data   = _this->driverdata;
+     MIR_Window* mir_window = window->driverdata;
++    char const* title = window->title ? window->title : "";
++    MirSurfaceSpec* spec;
+ 
+     if (IsSurfaceValid(mir_window) < 0)
+         return;
+ 
+-    MIR_mir_surface_set_state(mir_window->surface, mir_surface_state_restored);
++    spec = MIR_mir_connection_create_spec_for_changes(mir_data->connection);
++    MIR_mir_surface_spec_set_name(spec, title);
++
++    MIR_mir_surface_apply_spec(mir_window->surface, spec);
++    MIR_mir_surface_spec_release(spec);
+ }
+ 
+ #endif /* SDL_VIDEO_DRIVER_MIR */
+--- a/src/video/mir/SDL_mirwindow.h
++++ b/src/video/mir/SDL_mirwindow.h
+@@ -31,13 +31,13 @@
+ 
+ #include "SDL_mirvideo.h"
+ 
+-typedef struct {
++struct MIR_Window {
+     SDL_Window* sdl_window;
+-    MIR_Data* mir_data;
++    MIR_Data*   mir_data;
+ 
+     MirSurface* surface;
+-    EGLSurface egl_surface;
+-} MIR_Window;
++    EGLSurface  egl_surface;
++};
+ 
+ 
+ extern int
+@@ -60,10 +60,25 @@
+ extern void
+ MIR_RestoreWindow(_THIS, SDL_Window* window);
+ 
++extern void
++MIR_HideWindow(_THIS, SDL_Window* window);
++
+ extern SDL_bool
+ MIR_GetWindowWMInfo(_THIS, SDL_Window* window, SDL_SysWMinfo* info);
+ 
+-#endif /* _SDL_mirwindow_h */
++extern void
++MIR_SetWindowSize(_THIS, SDL_Window* window);
++
++extern void
++MIR_SetWindowMinimumSize(_THIS, SDL_Window* window);
++
++extern void
++MIR_SetWindowMaximumSize(_THIS, SDL_Window* window);
++
++extern void
++MIR_SetWindowTitle(_THIS, SDL_Window* window);
++
++#endif /* _SDL_mirwindow */
+ 
+ /* vi: set ts=4 sw=4 expandtab: */
+ 
