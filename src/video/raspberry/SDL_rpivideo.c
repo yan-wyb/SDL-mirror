@@ -230,6 +230,10 @@ RPI_CreateWindow(_THIS, SDL_Window * window)
     DISPMANX_UPDATE_HANDLE_T dispman_update;
     uint32_t layer = SDL_RPI_VIDEOLAYER;
     const char *env;
+    float srcAspect = 1;
+    float dstAspect = 1;
+    int factor_x = 0;
+    int factor_y = 0;
 
     /* Disable alpha, otherwise the app looks composed with whatever dispman is showing (X11, console,etc) */
     dispman_alpha.flags = DISPMANX_FLAGS_ALPHA_FIXED_ALL_PIXELS; 
@@ -243,11 +247,6 @@ RPI_CreateWindow(_THIS, SDL_Window * window)
     }
     display = SDL_GetDisplayForWindow(window);
     displaydata = (SDL_DisplayData *) display->driverdata;
-
-    float srcAspect = 1; 
-    float dstAspect = 1;
-    int factor_x = 0;
-    int factor_y = 0;
 
     if (hintScale != NULL)
         scalemode = *hintScale;
