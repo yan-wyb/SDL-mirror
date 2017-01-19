@@ -446,6 +446,7 @@ SDL_EVDEV_translate_keycode(int keycode)
     if (keycode < SDL_arraysize(linux_scancode_table))
         scancode = linux_scancode_table[keycode];
 
+    /*
     if (scancode == SDL_SCANCODE_UNKNOWN) {
         /* BTN_TOUCH is handled elsewhere, but we might still end up here if
            you get an unexpected BTN_TOUCH from something SDL believes is not
@@ -457,6 +458,7 @@ SDL_EVDEV_translate_keycode(int keycode)
                 "<https://discourse.libsdl.org/> EVDEV KeyCode %d", keycode);
         }
     }
+    */
 
     return scancode;
 }
