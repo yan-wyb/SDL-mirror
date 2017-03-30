@@ -39,7 +39,10 @@
 
 typedef struct SDL_DisplayData
 {
-    struct fbdev_window native_display;
+    struct {
+        unsigned short width;
+        unsigned short height;
+    } native_display;
 } SDL_DisplayData;
 
 typedef struct SDL_WindowData
