@@ -9,7 +9,7 @@ confflags = --disable-rpath --disable-video-directfb \
             --disable-x11-shared  --disable-video-opengl --enable-video-opengles \
             --disable-esd --disable-pulseaudio \
             --disable-input-tslib \
-            --enable-video-rpi
+            --enable-video-rpi --enable-video-kmsdrm
 
 %:
 	dh $@ --parallel
