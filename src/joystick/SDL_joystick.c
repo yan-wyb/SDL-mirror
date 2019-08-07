@@ -1047,7 +1047,7 @@ SDL_JoystickUpdate(void)
             if (joystick->delayed_guide_button) {
                 SDL_GameControllerHandleDelayedGuideButton(joystick);
             }
-        }
+
 
         if (joystick->force_recentering) {
             /* Tell the app that everything is centered/unpressed... */
@@ -1067,6 +1067,8 @@ SDL_JoystickUpdate(void)
 
             joystick->force_recentering = SDL_FALSE;
         }
+
+	}
     }
 
     SDL_LockJoysticks();
