@@ -145,6 +145,28 @@ KMSDRM_Available(void)
     return ret;
 }
 
+static drmModeModeInfo *
+connector_find_mode(drmModeConnector *connector, const char *mode_str, const unsigned int vrefresh)
+{
+    short i;
+    drmModeModeInfo *mode;
+    for (i = 0; i < connector->count_modes; i++) {
+        mode = &connector->modes[i];
+        if (!strcmp(mode->name, mode_str)) {
+            /* If the vertical refresh frequency is not specified then return the
+             * first mode that match with the name. Else, return the mode that match
+             * the name and the specified vertical refresh frequency.
+             */
+            if (vrefresh == 0)
+                return mode;
+            else if (mode->vrefresh == vrefresh)
+                return mode;
+        }
+    }
+
+    return NULL;
+}
+
 static void
 KMSDRM_Destroy(SDL_VideoDevice * device)
 {
@@ -350,12 +372,19 @@ KMSDRM_VideoInit(_THIS)
     SDL_bool found;
     int ret = 0;
     char *devname;
+    const char *crtc_override;
+    const char *mode_override;
     SDL_VideoData *vdata = ((SDL_VideoData *)_this->driverdata);
     drmModeRes *resources = NULL;
     drmModeConnector *connector = NULL;
     drmModeEncoder *encoder = NULL;
     SDL_DisplayMode current_mode;
     SDL_VideoDisplay display;
+    const char *mode_line_override;
+    char *hint_video_mode = NULL;
+    unsigned short hint_vrefresh=0;
+    char* p;
+    drmModeModeInfo *override_mode = NULL;
 
     /* Allocate display internal data */
     SDL_DisplayData *data = (SDL_DisplayData *) SDL_calloc(1, sizeof(SDL_DisplayData));
@@ -472,9 +501,48 @@ KMSDRM_VideoInit(_THIS)
     SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "Saved crtc_id %u, fb_id %u, (%u,%u), %ux%u",
                  vdata->saved_crtc->crtc_id, vdata->saved_crtc->buffer_id, vdata->saved_crtc->x,
                  vdata->saved_crtc->y, vdata->saved_crtc->width, vdata->saved_crtc->height);
-    data->crtc_id = encoder->crtc_id;
-    data->cur_mode = vdata->saved_crtc->mode;
-    vdata->crtc_id = encoder->crtc_id;
+
+    crtc_override = SDL_getenv("SDL_VIDEO_KMSDRM_CRTCID");
+    if (crtc_override)
+        data->crtc_id = vdata->crtc_id = SDL_atoi(crtc_override);
+    else
+        data->crtc_id = vdata->crtc_id = encoder->crtc_id;
+
+    mode_override = SDL_getenv("SDL_VIDEO_KMSDRM_MODEID");
+    if (mode_override)
+        data->cur_mode = connector->modes[SDL_atoi(mode_override)];
+    else
+        data->cur_mode = vdata->saved_crtc->mode;
+
+    mode_line_override = SDL_getenv("SDL_VIDEO_KMSDRM_MODELINE");
+    if (mode_line_override && !mode_override) {
+        /* Video mode override, formatted as WxH[@vRefresh] */
+        SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO,"Override video mode received - %s", mode_line_override);
+
+       p = strchr(mode_line_override, '@');
+       if (p == NULL) {
+           hint_video_mode =strdup(mode_line_override);
+       } else {
+           hint_video_mode = strndup(mode_line_override, (unsigned int)(p - mode_line_override));
+           hint_vrefresh = strtoul(p + 1, NULL, 10);
+       }
+
+       override_mode = connector_find_mode(connector, hint_video_mode, hint_vrefresh);
+       if (override_mode) {
+            if ((*override_mode).hdisplay != data->cur_mode.hdisplay ||
+                (*override_mode).vdisplay != data->cur_mode.vdisplay ||
+                (*override_mode).vrefresh != data->cur_mode.vrefresh) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO, "Changing video mode to %dx%d @ %d",(*override_mode).hdisplay, (*override_mode).vdisplay, (*override_mode).vrefresh);
+                    current_mode.w = (*override_mode).hdisplay;
+                    current_mode.h = (*override_mode).vdisplay;
+                    current_mode.refresh_rate = (*override_mode).vrefresh;
+                    data->cur_mode = (*override_mode);
+            }
+        } else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_VIDEO, "Cannot find a suitable video mode on connector %d for mode %s, using default",
+                connector->connector_id, mode_line_override);
+        }
+    }
 
     // select default mode if this one is not valid
     if (vdata->saved_crtc->mode_valid == 0) {
