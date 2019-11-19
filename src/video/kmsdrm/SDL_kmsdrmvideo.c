@@ -417,6 +417,9 @@ KMSDRM_VideoInit(_THIS)
         goto cleanup;
     }
 
+    /* Expose aspect ratio flags to userspace */
+    KMSDRM_drmSetClientCap(vdata->drm_fd, DRM_CLIENT_CAP_ASPECT_RATIO, 1);
+
     /* Find the first available connector with modes */
     resources = KMSDRM_drmModeGetResources(vdata->drm_fd);
     if (!resources) {
