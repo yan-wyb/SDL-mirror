@@ -61,7 +61,7 @@ SDL_KMSDRM_SYM(drmModeConnectorPtr,drmModeGetConnector,(int fd, uint32_t connect
 SDL_KMSDRM_SYM(int,drmHandleEvent,(int fd,drmEventContextPtr evctx))
 SDL_KMSDRM_SYM(int,drmModePageFlip,(int fd, uint32_t crtc_id, uint32_t fb_id,
                                     uint32_t flags, void *user_data))
-
+SDL_KMSDRM_SYM(int,drmSetClientCap,(int fd, uint64_t capability, uint64_t value))
 
 SDL_KMSDRM_MODULE(GBM)
 SDL_KMSDRM_SYM(int,gbm_device_get_fd,(struct gbm_device *gbm))
