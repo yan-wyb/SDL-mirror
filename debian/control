@@ -1,4 +1,4 @@
-Source: libsdl2-2.0-0
+Source: libsdl2
 Priority: optional
 Section: libs
 Maintainer: Debian SDL packages maintainers <pkg-sdl-maintainers@lists.alioth.debian.org>
