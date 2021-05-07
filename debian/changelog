@@ -1,3 +1,9 @@
+libsdl2 (2:2.0.8+dfsg1-1ubuntu1.18.04.4) UNRELEASED; urgency=low
+
+  * add mali support
+
+ -- yan <yan-wyb@foxmail.com>  Fri, 7 May 2021 14:46:30 +0800
+
 libsdl2 (2.0.8) UNRELEASED; urgency=low
 
   * Updated SDL to version 2.0.8
