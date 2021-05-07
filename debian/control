@@ -1,4 +1,4 @@
-Source: libsdl2
+Source: libsdl2-2.0-0
 Priority: optional
 Section: libs
 Maintainer: Debian SDL packages maintainers <pkg-sdl-maintainers@lists.alioth.debian.org>
@@ -56,7 +56,8 @@ Multi-Arch: same
 Depends: ${misc:Depends},
          libsdl2-2.0-0 (= ${binary:Version}),
          libc6-dev,
-         libgl1-mesa-dev
+         libgl1-mesa-dev,
+		 libx11-dev
 Conflicts: libsdl-1.3-dev
 Replaces: libsdl-1.3-dev
 Description: Simple DirectMedia Layer development files
